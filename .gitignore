@@ -1,0 +1,5 @@
+data/
+.claude/
+*.pth
+.venv/
+__pycache__/
