@@ -1,0 +1,1 @@
+"""Integration pipeline connecting imaging and clinical models."""
