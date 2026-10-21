@@ -1,0 +1,130 @@
+{
+  "full": {
+    "features": [
+      "age",
+      "education_level",
+      "num_pregnancies",
+      "parity",
+      "prenatal_checkups",
+      "prev_cesarean_count",
+      "cesarean_history",
+      "mode_of_delivery",
+      "gestational_age",
+      "multiple_births",
+      "hypertensive_disorders",
+      "cardiac_disease",
+      "liver_disease",
+      "gestational_diabetes",
+      "macrosomia"
+    ],
+    "calibration": "none",
+    "cutoff_low_to_moderate": 0.03709025403465408,
+    "cutoff_moderate_to_high": 0.06019688305185951,
+    "band_percentiles_on_training_risk": [
+      50,
+      90
+    ],
+    "holdout_metrics": {
+      "AUROC": 0.6571609916367981,
+      "Brier": 0.034263405106684436,
+      "ECE": 0.0038698367063467916,
+      "cal_slope": 0.949411929003607,
+      "cal_intercept": -0.1628421079364142,
+      "mean_predicted": 0.03616450906212762,
+      "observed_rate": 0.035972507364098905
+    },
+    "holdout_bands": [
+      {
+        "band": "Low",
+        "n": 5599,
+        "pph_cases": 122,
+        "observed_rate": 0.021789605286658333,
+        "ci_low": 0.018280557727215003,
+        "ci_high": 0.025954424750247864,
+        "mean_predicted": 0.019519907176708994
+      },
+      {
+        "band": "Moderate",
+        "n": 4460,
+        "pph_cases": 184,
+        "observed_rate": 0.04125560538116592,
+        "ci_low": 0.03580268215621308,
+        "ci_high": 0.04749812314117919,
+        "mean_predicted": 0.04549283826735324
+      },
+      {
+        "band": "High",
+        "n": 1144,
+        "pph_cases": 97,
+        "observed_rate": 0.08479020979020979,
+        "ci_low": 0.07000436712578013,
+        "ci_high": 0.10235530340715752,
+        "mean_predicted": 0.08125959446523302
+      }
+    ],
+    "model_file": "clinical_logreg.pkl"
+  },
+  "no_late": {
+    "features": [
+      "age",
+      "education_level",
+      "num_pregnancies",
+      "parity",
+      "prenatal_checkups",
+      "prev_cesarean_count",
+      "cesarean_history",
+      "gestational_age",
+      "multiple_births",
+      "hypertensive_disorders",
+      "cardiac_disease",
+      "liver_disease",
+      "gestational_diabetes"
+    ],
+    "calibration": "none",
+    "cutoff_low_to_moderate": 0.03576704885040114,
+    "cutoff_moderate_to_high": 0.05401236225371498,
+    "band_percentiles_on_training_risk": [
+      50,
+      90
+    ],
+    "holdout_metrics": {
+      "AUROC": 0.6032484376435989,
+      "Brier": 0.03455298303945445,
+      "ECE": 0.0038328020986731883,
+      "cal_slope": 0.7923643931999584,
+      "cal_intercept": -0.6734267807068515,
+      "mean_predicted": 0.03628721356823636,
+      "observed_rate": 0.035972507364098905
+    },
+    "holdout_bands": [
+      {
+        "band": "Low",
+        "n": 5488,
+        "pph_cases": 142,
+        "observed_rate": 0.02587463556851312,
+        "ci_low": 0.021994254754874286,
+        "ci_high": 0.030418327574521377,
+        "mean_predicted": 0.024809377430823936
+      },
+      {
+        "band": "Moderate",
+        "n": 4626,
+        "pph_cases": 200,
+        "observed_rate": 0.043233895373973194,
+        "ci_low": 0.03774212738074621,
+        "ci_high": 0.04948366453403549,
+        "mean_predicted": 0.04263364208099077
+      },
+      {
+        "band": "High",
+        "n": 1089,
+        "pph_cases": 61,
+        "observed_rate": 0.05601469237832874,
+        "ci_low": 0.04385275008106948,
+        "ci_high": 0.07129806408998696,
+        "mean_predicted": 0.06717039669231117
+      }
+    ],
+    "model_file": "clinical_logreg_no_late.pkl"
+  }
+}

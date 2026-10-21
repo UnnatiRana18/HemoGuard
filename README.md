@@ -85,6 +85,9 @@ cd HemoGuard
 # Install dependencies
 pip install -r requirements.txt
 
+# If XGBoost is still missing from your active Python environment
+python -m pip install xgboost
+
 # Download datasets (see data/README.md)
 # Place Zhejiang_dataset.xlsx in data/
 # Extract HC18 dataset to data/hc18/
@@ -97,6 +100,10 @@ python -m src.imaging.train_segmentation
 cd backend
 uvicorn main:app --reload
 ```
+
+If the XGBoost import fails, install it into the same Python environment used
+to run training with `python -m pip install xgboost`. You can verify the
+installation with `python -c "import xgboost; print(xgboost.__version__)"`.
 
 Visit http://localhost:8000 to access the prediction interface.
 
