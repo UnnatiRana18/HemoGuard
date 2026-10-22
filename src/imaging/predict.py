@@ -1,262 +1,164 @@
-"""Predict fetal head HC from ultrasound images using the trained U-Net.
+"""Measure fetal head circumference (mm) from an ultrasound image with the trained U-Net.
 
-Process (inference only):
-  1. Load a test image
-  2. Run the trained U-Net to predict a mask
-  3. Fit an ellipse to the predicted mask (cv2.fitEllipse)
-  4. Compute HC in pixels using the Ramanujan formula
-  5. Convert to mm using the pixel size (correct for resize ratio)
+Pipeline for one image:
+  grayscale image -> resize to 256x256 -> U-Net probability map -> resize back to the
+  ORIGINAL size -> threshold 0.5 -> keep the largest blob -> fit an ellipse ->
+  Ramanujan circumference in pixels -> x pixel size (mm/pixel) = head circumference in mm.
 
-On the test set, print:
-  - Mean absolute error (MAE) in mm
-  - Correlation with ground-truth HC
-  - Bland-Altman summary: mean difference and limits of agreement (mean ± 1.96 SD)
-
-Save a scatter plot predicted HC vs true HC to outputs/plots/hc_scatter.png.
-
-Usage (from the project root):
+Functions for reuse (backend): load_model, predict_hc.
+Run from the project root to evaluate on the 150 held-out TEST images:
   python src/imaging/predict.py
+Saves: outputs/plots/hc_scatter.png
 """
-from pathlib import Path
-import subprocess
-import sys
-
 import cv2
 import matplotlib
 import numpy as np
 import pandas as pd
+import torch
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-try:
-    import torch
-    from torch.utils.data import DataLoader
-
-    TORCH_AVAILABLE = True
-except ModuleNotFoundError as exc:
-    if exc.name != "torch":
-        raise
-    print("PyTorch is not installed; installing it into the current Python environment...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "torch>=2.0.0"])
-    import torch
-    from torch.utils.data import DataLoader
-    TORCH_AVAILABLE = True
-
-from dataset import IMG_SIZE, read_pair, load_records, make_splits
+from dataset import (IMG_SIZE, ROOT, ellipse_circumference_px, load_records, make_splits,
+                     outline_to_mask)
 from model import UNet
 
-ROOT = Path(__file__).resolve().parents[2]
 WEIGHTS_PATH = ROOT / "models" / "unet_hc18.pth"
+PLOT_PATH = ROOT / "outputs" / "plots" / "hc_scatter.png"
 
 
-def ellipse_circumference_px(mask: np.ndarray) -> float:
-    """Circumference (pixels) of the ellipse fitted to a 0/1 mask (Ramanujan formula)."""
-    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_NONE)
-    (_, _), (d1, d2), _ = cv2.fitEllipse(max(contours, key=cv2.contourArea))
-    a, b = d1 / 2, d2 / 2
-    return float(np.pi * (3 * (a + b) - np.sqrt((3 * a + b) * (a + 3 * b))))
+def load_model(path=WEIGHTS_PATH):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found. Train first: python src/imaging/train.py")
+    ckpt = torch.load(path, map_location=device)
+    net = UNet(base=ckpt["base"])
+    net.load_state_dict(ckpt["state_dict"])
+    return net.to(device).eval(), device
 
 
-def ramanujan_to_mm(circumference_px: float, pixel_size: float,
-                    resize_ratio: float) -> float:
-    """Convert circumference from pixels to millimetres.
-
-    Args:
-        circumference_px: HC in pixels (from fitted ellipse)
-        pixel_size: Physical size of one pixel in mm (from CSV)
-        resize_ratio: Ratio of original size to 256x256 (e.g., 800/256 for typical
-                      HC18 images)
-
-    Returns:
-        HC in millimetres
-    """
-    return circumference_px * pixel_size * resize_ratio
-
-
-def predict_one(net: UNet, img_processed: np.ndarray,
-                 orig_shape: tuple[int, int], pixel_size: float,
-                 device: torch.device) -> float:
-    """Predict mask, fit ellipse, compute HC in mm for a single image.
-
-    Args:
-        net: Trained U-Net model
-        img_processed: Grayscale image resized to 256x256 (0-255 uint8)
-        orig_shape: (h, w) of the original image before resize (800, 540 for HC18)
-        pixel_size: Physical pixel size in mm (from CSV)
-        device: Torch device
-
-    Returns:
-        HC in mm (0 if mask is empty/invalid)
-    """
-    # Run inference
-    img_tensor = torch.from_numpy(img_processed).float().div(255.0).unsqueeze(0).unsqueeze(0)  # [B=1, C=1, H=256, W=256]
-    img_tensor = img_tensor.to(device)
-    net.eval()
+def predict_prob(net, device, image: np.ndarray) -> np.ndarray:
+    """image: grayscale uint8 at original size -> 256x256 probability map (float 0-1)."""
+    small = cv2.resize(image, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
+    x = torch.from_numpy(small).float().div(255.0).unsqueeze(0).unsqueeze(0).to(device)
     with torch.no_grad():
-        logits = net(img_tensor)  # Expecting 4D input [B, C, H, W]
-    prob = torch.sigmoid(logits).cpu().numpy().squeeze()  # [256, 256]
-    mask = (prob > 0.5).astype(np.uint8)
+        return torch.sigmoid(net(x))[0, 0].cpu().numpy()
 
-    # Fit ellipse to predicted mask
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_NONE)
-    if len(contours) == 0:
-        return 0.0
 
+def clean_mask(prob: np.ndarray, size_hw: tuple[int, int]):
+    """Probability map -> binary mask at the original size (largest blob only), or None."""
+    h, w = size_hw
+    prob_full = cv2.resize(prob.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+    binary = (prob_full > 0.5).astype(np.uint8)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    contours = [c for c in contours if len(c) >= 5]
+    if not contours:
+        return None
+    mask = np.zeros_like(binary)
+    cv2.drawContours(mask, [max(contours, key=cv2.contourArea)], -1, 1, thickness=cv2.FILLED)
+    return mask
+
+
+def predict_hc(net, device, image: np.ndarray, pixel_size: float):
+    """Return {'hc_mm', 'mask', 'ellipse'} or None if no head was found."""
+    mask = clean_mask(predict_prob(net, device, image), image.shape)
+    if mask is None:
+        return None
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     (cx, cy), (d1, d2), angle = cv2.fitEllipse(max(contours, key=cv2.contourArea))
-    a, b = d1 / 2, d2 / 2
-    if a <= 0 or b <= 0:
-        return 0.0
-
-    # Compute circumference in pixels
-    circumference_px = float(np.pi * (3 * (a + b) -
-                      np.sqrt((3 * a + b) * (a + 3 * b))))
-
-    # Resize ratio
-    resize_ratio = orig_shape[1] / IMG_SIZE  # width ratio
-
-    # Convert to mm (correcting for resize)
-    hc_mm = ramanujan_to_mm(circumference_px, pixel_size, resize_ratio)
-
-    return hc_mm
+    return {"hc_mm": ellipse_circumference_px(mask) * pixel_size, "mask": mask,
+            "ellipse": {"center": (cx, cy), "axes": (d1, d2), "angle": angle}}
 
 
-def bland_altman(hc_pred: np.ndarray, hc_true: np.ndarray) -> dict[str, float]:
-    """Compute Bland-Altman analysis.
+def dice(a: np.ndarray, b: np.ndarray) -> float:
+    return float(2 * (a & b).sum() / (a.sum() + b.sum() + 1e-9))
 
-    Args:
-        hc_pred: Predicted HC values
-        hc_true: Ground-truth HC values (mm)
 
-    Returns:
-        Dictionary with keys: 'mean_diff', 'sd', 'bias', 'limits_loa',
-        'limits_hi_loa'
-    """
-    diffs = hc_pred - hc_true
-    mean_diff = diffs.mean()
-    sd = diffs.std()
-    bias = mean_diff
+def evaluate(net, device, records: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for _, r in records.iterrows():
+        image = cv2.imread(r["image_path"], cv2.IMREAD_GRAYSCALE)
+        true_mask = outline_to_mask(cv2.imread(r["mask_path"], cv2.IMREAD_GRAYSCALE))
+        out = predict_hc(net, device, image, float(r["pixel_size"]))
+        if out is None:
+            rows.append({"filename": r["filename"], "hc_true": r["hc_mm"], "hc_pred": np.nan,
+                         "dice": 0.0})
+            continue
+        rows.append({"filename": r["filename"], "hc_true": r["hc_mm"],
+                     "hc_pred": out["hc_mm"],
+                     "dice": dice(out["mask"].astype(bool), true_mask.astype(bool))})
+    return pd.DataFrame(rows)
 
-    limits_loa = mean_diff - 1.96 * sd
-    limits_hi_loa = mean_diff + 1.96 * sd
 
-    return {
-        "mean_diff": mean_diff,
-        "sd": sd,
-        "bias": bias,
-        "limits_loa": limits_loa,
-        "limits_hi_loa": limits_hi_loa
-    }
+def summarize(res: pd.DataFrame) -> dict:
+    ok = res.dropna(subset=["hc_pred"]).copy()
+    err = ok.hc_pred - ok.hc_true
+    sd = err.std(ddof=1)
+    return {"n": len(res), "failed": int(res.hc_pred.isna().sum()),
+            "mae": err.abs().mean(), "median_abs": err.abs().median(),
+            "rmse": float(np.sqrt((err ** 2).mean())), "bias": err.mean(),
+            "loa_low": err.mean() - 1.96 * sd, "loa_high": err.mean() + 1.96 * sd,
+            "mape_pct": (err.abs() / ok.hc_true).mean() * 100,
+            "r": float(np.corrcoef(ok.hc_true, ok.hc_pred)[0, 1]),
+            "within5": (err.abs() <= 5).mean() * 100, "within10": (err.abs() <= 10).mean() * 100,
+            "dice_mean": res.dice.mean(), "dice_sd": res.dice.std(ddof=1)}, ok, err
+
+
+def plot(ok: pd.DataFrame, err: pd.Series, s: dict) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8))
+    ax = axes[0]
+    lim = [ok.hc_true.min() - 10, ok.hc_true.max() + 10]
+    ax.plot(lim, lim, "k--", lw=1, label="Perfect agreement")
+    ax.scatter(ok.hc_true, ok.hc_pred, s=14, color="#0F5257", alpha=0.75)
+    ax.set(xlabel="True head circumference (mm)", ylabel="Predicted head circumference (mm)",
+           title=f"Predicted vs true (n={len(ok)}, r={s['r']:.3f}, MAE={s['mae']:.2f} mm)",
+           xlim=lim, ylim=lim)
+    ax.legend(loc="upper left", fontsize=8)
+    ax = axes[1]
+    mean = (ok.hc_true + ok.hc_pred) / 2
+    ax.scatter(mean, err, s=14, color="#0F5257", alpha=0.75)
+    for y, style, label in [(s["bias"], "-", f"Bias {s['bias']:+.2f} mm"),
+                            (s["loa_high"], "--", f"+1.96 SD ({s['loa_high']:+.1f} mm)"),
+                            (s["loa_low"], "--", f"-1.96 SD ({s['loa_low']:+.1f} mm)")]:
+        ax.axhline(y, color="#B33A32", ls=style, lw=1, label=label)
+    ax.axhline(0, color="k", lw=0.6)
+    ax.set(xlabel="Mean of true and predicted (mm)", ylabel="Predicted - true (mm)",
+           title="Bland-Altman agreement")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    PLOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(PLOT_PATH, dpi=150)
+    plt.close(fig)
+
+
+def report(res: pd.DataFrame) -> None:
+    s, ok, err = summarize(res)
+    print(f"Images: {s['n']} | measurement failed on: {s['failed']}")
+    print(f"Head circumference error (predicted - true), mm:")
+    print(f"  mean absolute error {s['mae']:.2f} | median {s['median_abs']:.2f} | RMSE {s['rmse']:.2f}")
+    print(f"  relative error {s['mape_pct']:.2f}% | within 5 mm: {s['within5']:.1f}% | "
+          f"within 10 mm: {s['within10']:.1f}%")
+    print(f"  correlation r = {s['r']:.4f}")
+    print(f"  Bland-Altman: bias {s['bias']:+.2f} mm, 95% limits of agreement "
+          f"[{s['loa_low']:+.2f}, {s['loa_high']:+.2f}] mm")
+    print(f"  Dice at full resolution: {s['dice_mean']:.4f} +/- {s['dice_sd']:.4f}")
+    thirds = pd.qcut(ok.hc_true, 3, labels=["small heads", "medium heads", "large heads"])
+    print("  MAE by head size:")
+    for name, g in err.abs().groupby(thirds, observed=True):
+        print(f"    {name:<13} {g.mean():.2f} mm  ({ok.hc_true[g.index].min():.0f}-"
+              f"{ok.hc_true[g.index].max():.0f} mm)")
+    worst = err.abs().sort_values(ascending=False).head(3)
+    print("  Largest errors: " + ", ".join(
+        f"{ok.filename[i]} ({err[i]:+.1f} mm)" for i in worst.index))
+    plot(ok, err, s)
+    print("\nSaved: outputs/plots/hc_scatter.png")
 
 
 def main() -> None:
-    # Load model weights (must have been trained first)
-    if not WEIGHTS_PATH.exists():
-        raise FileNotFoundError(
-            f"Model weights not found at {WEIGHTS_PATH}. Run training first:\n"
-            "  python src/imaging/train.py"
-        )
-
-    # Load records and create test split
-    df = load_records()
-    splits = make_splits(df)
-    test_records = splits["test"].copy()
-    print(f"Loaded {len(test_records)} test images with labels")
-
-    # Load trained model
-    if TORCH_AVAILABLE:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        name = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
-    else:
-        device = torch.device("cpu")
-        name = "CPU"
-    model = UNet()
-    checkpoint = torch.load(WEIGHTS_PATH, map_location=device)
-    model.load_state_dict(checkpoint["state_dict"])
-    model = model.to(device)
-    print(f"Loaded UNet from {WEIGHTS_PATH.relative_to(ROOT)} (device: {device} ({name}))")
-
-    # Predict on test set
-    hc_pred_list = []
-    hc_true_list = []
-    failures = []
-
-    for idx, row in test_records.iterrows():
-        # Read and preprocess the image
-        img_s, mask_s, orig_shape = read_pair(row, IMG_SIZE)
-
-        # Predict mask and compute HC
-        try:
-            hc_pred = predict_one(model, img_s, orig_shape,
-                                  row["pixel_size"], device)
-            if hc_pred == 0.0:
-                failures.append(idx)
-            else:
-                hc_pred_list.append(hc_pred)
-                hc_true_list.append(row["hc_mm"])
-        except Exception as e:
-            failures.append(idx)
-            print(f"  WARNING: Prediction failed for image {idx}: {e}")
-
-    hc_pred = np.array(hc_pred_list) if hc_pred_list else np.array([])
-    hc_true = np.array(hc_true_list) if hc_true_list else np.array([])
-
-    print(f"\nPredictions completed: {len(hc_pred)}/{len(test_records)} successful")
-    if failures:
-        print(f"  Failed: {len(failures)} images")
-    if hc_pred.size > 0:
-        print(f"  HC range: {hc_pred.min():.1f} - {hc_pred.max():.1f} mm")
-    else:
-        raise RuntimeError("No predictions succeeded - check model and data")
-
-    # Compute metrics
-    mae_mm = np.abs(hc_pred - hc_true).mean()
-    corr = np.corrcoef(hc_true, hc_pred)[0, 1]
-
-    ba = bland_altman(hc_pred, hc_true)
-
-    # Print results
-    print(f"\n{'='*55}")
-    print("PREDICTION PERFORMANCE ON TEST SET")
-    print('='*55)
-    print(f"Mean absolute error (MAE):     {mae_mm:.2f} mm")
-    print(f"Correlation (pred vs true):    {corr:.4f}")
-    print(f"\nBland-Altman analysis:")
-    print(f"  Mean difference:            {ba['mean_diff']:+.2f} mm")
-    print(f"  Standard deviation:         {ba['sd']:.2f} mm")
-    print(f"  Bias:                        {ba['bias']:+.2f} mm")
-    print(f"  Limits of agreement:         {ba['limits_loa']:+.2f} to "
-          f"{ba['limits_hi_loa']:+.2f} mm")
-    print(f"  (mean ± 1.96 × SD)")
-
-    # Save scatter plot
-    plot_path = ROOT / "outputs" / "plots" / "hc_scatter.png"
-    plot_path.parent.mkdir(parents=True, exist_ok=True)
-
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.scatter(hc_true, hc_pred, alpha=0.5, edgecolors="k", linewidth=0.5)
-
-    # Perfect prediction line
-    ax.plot([hc_true.min(), hc_true.max()], [hc_true.min(), hc_true.max()],
-            'r--', lw=2, label="Perfect prediction")
-
-    # Add tolerance band
-    tol = np.std(hc_pred - hc_true) * 1.96
-    ax.plot([hc_true.min() - tol, hc_true.max() + tol],
-            [hc_true.min() + tol, hc_true.max() + tol], 'r:', lw=1)
-
-    ax.set_xlabel("True HC (mm)")
-    ax.set_ylabel("Predicted HC (mm)")
-    ax.set_title(f"HC Prediction vs Ground Truth\n"
-                 f"MAE = {mae_mm:.2f} mm, r = {corr:.3f}")
-    ax.legend(loc="upper left")
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(plot_path, dpi=130, bbox_inches="tight")
-    plt.close(fig)
-    print(f"\nSaved scatter plot: {plot_path}")
+    net, device = load_model()
+    test = make_splits(load_records())["test"]
+    print(f"Device: {device} | evaluating on the {len(test)} held-out TEST images\n")
+    report(evaluate(net, device, test))
 
 
 if __name__ == "__main__":

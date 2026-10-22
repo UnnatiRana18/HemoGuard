@@ -13,8 +13,6 @@ Run from the project root:  python src/imaging/dataset.py
 Saves: outputs/plots/hc18_preview.png
 """
 from pathlib import Path
-import subprocess
-import sys
 
 import cv2
 import matplotlib
@@ -23,18 +21,9 @@ import pandas as pd
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import torch
 from sklearn.model_selection import train_test_split
-
-try:
-    import torch
-    from torch.utils.data import Dataset
-except ModuleNotFoundError as exc:
-    if exc.name != "torch":
-        raise
-    print("PyTorch is not installed; installing it into the current Python environment...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "torch>=2.0.0"])
-    import torch
-    from torch.utils.data import Dataset
+from torch.utils.data import Dataset
 
 ROOT = Path(__file__).resolve().parents[2]
 SEED = 42
@@ -86,11 +75,21 @@ def make_splits(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 
 def outline_to_mask(outline: np.ndarray) -> np.ndarray:
-    """Fill the ellipse outline (grayscale image) into a solid 0/1 mask, same size."""
+    """Fill the ellipse outline (grayscale image) into a solid 0/1 mask, same size.
+
+    A few HC18 outlines are not fully closed (e.g. 231_HC, 427_2HC, 776_HC, 977_HC), so
+    filling the contour leaves only a thin curve. In that case the convex hull of the
+    outline pixels (an ellipse is convex) is filled instead.
+    """
     binary = (outline > 127).astype(np.uint8)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     filled = np.zeros_like(binary)
     cv2.drawContours(filled, contours, -1, 1, thickness=cv2.FILLED)
+    hull = cv2.convexHull(np.column_stack(np.where(binary > 0))[:, ::-1].astype(np.int32))
+    hull_area = cv2.contourArea(hull)
+    if filled.sum() < 0.8 * hull_area:  # outline had a gap: fill the hull instead
+        filled = np.zeros_like(binary)
+        cv2.fillConvexPoly(filled, hull, 1)
     return filled
 
 
