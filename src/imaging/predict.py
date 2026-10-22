@@ -91,11 +91,11 @@ def predict_one(net: UNet, img_processed: np.ndarray,
         HC in mm (0 if mask is empty/invalid)
     """
     # Run inference
-    img_tensor = torch.from_numpy(img_processed).float().div(255.0).unsqueeze(0)
+    img_tensor = torch.from_numpy(img_processed).float().div(255.0).unsqueeze(0).unsqueeze(0)  # [B=1, C=1, H=256, W=256]
     img_tensor = img_tensor.to(device)
     net.eval()
     with torch.no_grad():
-        logits = net(img_tensor)
+        logits = net(img_tensor)  # Expecting 4D input [B, C, H, W]
     prob = torch.sigmoid(logits).cpu().numpy().squeeze()  # [256, 256]
     mask = (prob > 0.5).astype(np.uint8)
 
