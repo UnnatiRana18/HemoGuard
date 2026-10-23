@@ -63,11 +63,19 @@ def load(variant: str = "full") -> dict:
     prep, lr = model.named_steps["prep"], model.named_steps["model"]
     features = record["features"]
 
-    # reference = average patient of the TRAINING part (same split as calibrate.py)
-    df = pd.read_csv(DATA_PATH)
-    train_df, _ = train_test_split(df, test_size=HOLDOUT_FRACTION,
-                                   stratify=df[TARGET], random_state=SEED)
-    ref_mean = _dense(prep.transform(train_df[features])).mean(axis=0)
+    # reference = average patient of the TRAINING part (same split as calibrate.py).
+    # Cached in models/explain_reference_<variant>.json so the app does not need data/.
+    ref_path = MODEL_DIR / f"explain_reference_{variant}.json"
+    if ref_path.exists():
+        ref_mean = np.array(json.loads(ref_path.read_text())["ref_mean"])
+    else:
+        df = pd.read_csv(DATA_PATH)
+        train_df, _ = train_test_split(df, test_size=HOLDOUT_FRACTION,
+                                       stratify=df[TARGET], random_state=SEED)
+        ref_mean = _dense(prep.transform(train_df[features])).mean(axis=0)
+        ref_path.write_text(json.dumps({"variant": variant, "ref_mean": ref_mean.tolist()}))
+    if len(ref_mean) != len(lr.coef_[0]):
+        raise ValueError(f"{ref_path.name} does not match the model: delete it and rerun")
     cols = list(prep.get_feature_names_out())
     return {"variant": variant, "features": features, "model": model, "prep": prep,
             "coef": lr.coef_[0], "intercept": float(lr.intercept_[0]),
