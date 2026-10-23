@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HemoGuard · Postpartum hemorrhage risk estimator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-inner">
+      <div>
+        <p class="eyebrow">Maternal health · decision support</p>
+        <h1>HemoGuard</h1>
+        <p class="lede">Estimate the risk of postpartum hemorrhage (PPH) from routinely recorded maternal data, with an optional fetal ultrasound, and see which factors drive the estimate.</p>
+      </div>
+      <p class="badge" role="note">Research prototype · not for clinical use</p>
+    </div>
+  </header>
+
+  <main class="wrap layout">
+    <section class="card" aria-labelledby="form-title">
+      <div class="card-head">
+        <h2 id="form-title">Patient details</h2>
+        <div class="presets" role="group" aria-label="Example patients">
+          <button type="button" class="ghost" data-preset="typical">Typical patient</button>
+          <button type="button" class="ghost" data-preset="higher">Higher-risk example</button>
+        </div>
+      </div>
+
+      <form id="patient-form" novalidate>
+        <fieldset>
+          <legend>Pregnancy and history</legend>
+          <div class="grid2">
+            <label>Maternal age (years)
+              <input type="number" id="age" min="14" max="55" step="1" value="28" required>
+            </label>
+            <label>Gestational age (weeks)
+              <input type="number" id="gestational_age" min="28" max="44" step="1" value="39" required>
+            </label>
+            <label>Pregnancies <span class="hint">incl. this one</span>
+              <input type="number" id="num_pregnancies" min="1" max="15" step="1" value="2" required>
+            </label>
+            <label>Previous births (parity)
+              <input type="number" id="parity" min="0" max="10" step="1" value="1" required>
+            </label>
+            <label>Prenatal checkups
+              <input type="number" id="prenatal_checkups" min="0" max="30" step="1" value="8" required>
+            </label>
+            <label>Previous cesarean sections
+              <input type="number" id="prev_cesarean_count" min="0" max="6" step="1" value="0" required>
+            </label>
+            <label>Mode of delivery
+              <select id="mode_of_delivery">
+                <option value="1" selected>Vaginal</option>
+                <option value="0">Cesarean</option>
+              </select>
+            </label>
+            <label>Education level <span class="hint">dataset code</span>
+              <select id="education_level">
+                <option value="1" selected>Code 1</option><option value="2">Code 2</option>
+                <option value="3">Code 3</option><option value="4">Code 4</option>
+                <option value="5">Code 5</option><option value="6">Code 6</option>
+              </select>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Conditions in this pregnancy</legend>
+          <div class="checks">
+            <label class="check"><input type="checkbox" id="multiple_births"> Multiple births (twins or more)</label>
+            <label class="check"><input type="checkbox" id="hypertensive_disorders"> Hypertensive disorder</label>
+            <label class="check"><input type="checkbox" id="gestational_diabetes"> Gestational diabetes</label>
+            <label class="check"><input type="checkbox" id="cardiac_disease"> Cardiac disease</label>
+            <label class="check"><input type="checkbox" id="liver_disease"> Liver disease</label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Large baby (macrosomia, 4 kg or more)</legend>
+          <div class="radios" role="radiogroup" aria-label="Macrosomia">
+            <label class="radio"><input type="radio" name="macrosomia" value="unknown" checked> Unknown</label>
+            <label class="radio"><input type="radio" name="macrosomia" value="0"> No</label>
+            <label class="radio"><input type="radio" name="macrosomia" value="1"> Yes</label>
+          </div>
+          <label class="us-select">Fetal ultrasound (optional)
+            <select id="us_mode">
+              <option value="none" selected>Not used</option>
+              <option value="image">Upload a head ultrasound image</option>
+              <option value="hc">Enter the head circumference</option>
+            </select>
+          </label>
+          <div id="us-image" class="us-box" hidden>
+            <label>Ultrasound image (PNG or JPEG)
+              <input type="file" id="image" accept="image/png,image/jpeg">
+            </label>
+            <label>Pixel size (mm per pixel)
+              <input type="number" id="pixel_size" min="0.01" max="2" step="any" placeholder="e.g. 0.2575">
+            </label>
+            <p class="hint">Pixel size comes from the scan's scale. The head circumference is measured by the model.</p>
+          </div>
+          <div id="us-hc" class="us-box" hidden>
+            <label>Head circumference (mm)
+              <input type="number" id="hc_mm" min="21" max="449" step="any" placeholder="e.g. 335">
+            </label>
+          </div>
+          <p class="hint" id="us-note" hidden>An ultrasound result replaces the yes/no answer above. It uses the gestational age entered here.</p>
+          <details class="advanced">
+            <summary>Advanced: model assumption</summary>
+            <label>Assumed correlation between head size and birth weight (ρ): <strong id="rho-out">0.5</strong>
+              <input type="range" id="rho" min="0.3" max="0.7" step="0.1" value="0.5">
+            </label>
+            <p class="hint">No public dataset links ultrasound head size to birth weight, so this is an assumption. Check how much the estimate moves between 0.3 and 0.7.</p>
+          </details>
+        </fieldset>
+
+        <button type="submit" class="primary" id="submit">Estimate risk</button>
+        <div id="form-error" class="alert error" role="alert" hidden></div>
+      </form>
+    </section>
+
+    <section id="results" aria-live="polite" aria-label="Results">
+      <div class="card empty" id="empty-state">
+        <h2>Result</h2>
+        <p>Enter the details and press <strong>Estimate risk</strong>. You will see the risk, its band, and what pushes it up or down.</p>
+        <p class="hint">Tip: try the two example patients above.</p>
+      </div>
+      <div id="result-body" hidden></div>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    <p>Model: logistic regression trained on 56,014 deliveries from 18 hospitals in Zhejiang, China (public dataset). Validation is internal only: it has not been tested on another hospital or country. Fetal head measurement: U-Net trained on the public HC18 ultrasound dataset. The two models were never trained together.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
